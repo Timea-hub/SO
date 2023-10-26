@@ -1,0 +1,8 @@
+
+regex_code=
+‘while read line
+do
+echo $line | grep -E “^[A-Z]+[a-zA-Z \,]+\.{1}$” | grep -vE “(si[\ ]*,)” | grep -v “n[pb]”
+done   ‘
+
+eval “regex_code”
