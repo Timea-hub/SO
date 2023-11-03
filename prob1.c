@@ -39,11 +39,11 @@ int main(int argc, char *argv[]){
 	}
 	}
 	
-	dprintf(output, "Litere mici: %d\n", k_literemici);
-	dprintf(output, "Litere mari: %d\n", k_literemari);
-	dprintf(output, "Cifre: %d\n", k_cifre);
-	dprintf(output, "Aparitiile caracterului %c: %d\n", ch, k_aparitii);
-	dprintf(output, "Marimea fisierului: %d\n", k_literemici);
+	sprintf(output, "Litere mici: %d\n", k_literemici);
+	sprintf(output, "Litere mari: %d\n", k_literemari);
+	sprintf(output, "Cifre: %d\n", k_cifre);
+	sprintf(output, "Aparitiile caracterului %c: %d\n", ch, k_aparitii);
+	sprintf(output, "Marimea fisierului: %d\n", k_literemici);
 	
 	int close(input);
 	int close(output);
