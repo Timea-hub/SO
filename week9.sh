@@ -1,20 +1,25 @@
 #!/bin/bash
 
-if ["#" - ne 1]; then
-    echo "Utilizare: $0 caracter"
+if [ $# -ne 1 ];
+then
+    echo "Scriptul accepta un sigur argument, representat de un caracter"
     exit 1
 fi
 
-k=0
+must_have="^[A-Z][a-zA-Z0-9, ]*[!\?\.]$"
+must_not_have=",[ ]*si"
 
-while IFS = read -r line;
-
+while read line;
 do
-    if [[$line =~ [A-Z][A-Za-z0-9,\.!\?]$ && ! $line =~ ,*[si]$]]; then
-
-    ((k++))
-
+    echo $line | grep "$must_have" > /dev/null
+    if [ $? -ne 0 ];
+    then 
+        continue
     fi
-done
-
-echo $k
+    echo $line | grep "$must_not_have" > /dev/null  
+    if [ $? -eq 0 ];
+    then 
+        continue 
+    fi
+    echo $line | grep "$1" 
+done | wc -l
