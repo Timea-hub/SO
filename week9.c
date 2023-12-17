@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
@@ -14,19 +15,56 @@
 
 
 int fw;
-char *destiation_directory;
+char ch_2_be_found;
+int child_parent_pipe[2];
+char *destiation_directory, *curent_path;
 int child_process_counter;
 int line_counter;
 
 DIR *current;
 void child_process_factory();
 
-
 void system_function_error_wrapper(char *error_message, int return_code){
     if(return_code < 0){
         perror(error_message);
         exit(EXIT_FAILURE);
     }
+}
+
+void open_pipe(int p[]){
+    system_function_error_wrapper("Failed to open pipe",
+        pipe(p)
+    );
+}
+
+void close_pipe_end(int pipe_id){
+    system_function_error_wrapper("Function call error: 'close' on pipe end",
+        close(pipe_id)
+    );
+}
+
+void close_pipe_ends(int p[]){
+    close_pipe_end(p[0]);
+    close_pipe_end(p[1]);
+}
+
+void stdout_on_pipe(int p[]){
+    system_function_error_wrapper("Failed to redirect standard output on pipe",
+        dup2(p[1], STDOUT_FILENO)
+    );
+}
+
+void stdin_on_pipe(int p[]){
+    system_function_error_wrapper("Failed to redirect standard input on pipe",
+        dup2(p[0], STDIN_FILENO)
+    );
+}
+
+
+void execute_sub_process(char *command){
+    execl("/usr/bin/bash", "bash", "-c", command, (char*)NULL);
+    perror("Fail to execute subprocess");
+    exit(EXIT_FAILURE);
 }
 
 const int CHAR_SIZE = sizeof(char);
@@ -40,11 +78,11 @@ char* string_safe_alloc(int size){
 }
 
 void check_command_line_argument(int argument_counter, char **arguments){
-    if (argument_counter != 3){
-        perror("Usage error: The binary require only two arguments, both of them should represent valid path to a directory");
+    if (argument_counter != 4){
+        perror("Usage error: The binary require only three arguments, the first two, should represent valid path to a directory, and the last one should be alphanumeric character");
         exit(EXIT_FAILURE);
     }
-    char *curent_path = string_safe_alloc(PATH_MAX);
+    curent_path = string_safe_alloc(PATH_MAX);
     if(!getcwd(curent_path, PATH_MAX)){
         perror("Function call error: 'getcwd' for current directory");
         exit(EXIT_FAILURE);
@@ -63,11 +101,16 @@ void check_command_line_argument(int argument_counter, char **arguments){
     system_function_error_wrapper("Function call error: 'chdir' going back to current directory",
         chdir(curent_path)
     );
-    free(curent_path);
 
     system_function_error_wrapper("Usage error: The argument must be a path to a directory",
         chdir(arguments[1])
     );
+
+    if(strlen(arguments[3]) > 1 || !isalnum(arguments[3][0])){
+        perror("The last argument must be an alphanumeric character");
+        exit(EXIT_FAILURE);
+    }
+    ch_2_be_found = arguments[3][0];
 }
 
 
@@ -307,12 +350,13 @@ void close_destination_file(){
     );
 }
 
-void create_entry_process_for_regular_files(char *file_name, struct stat file_info){
+void create_entry_process_for_bmp_files(char *file_name, struct stat file_info){
     pid_t pid1, pid2;
     pid1 = fork();
     system_function_error_wrapper("Failed to create child process", pid1);
     child_process_counter++;
     if(!pid1){
+        close_pipe_ends(child_parent_pipe);
         open_destination_file(file_name);
         extract_statistics_from_reqular_files(file_name, file_info);
         close_destination_file();
@@ -322,14 +366,47 @@ void create_entry_process_for_regular_files(char *file_name, struct stat file_in
         system_function_error_wrapper("Failed to create child process", pid2);
         child_process_counter++;
         if(!pid2){
-            if(is_bit_map_file(file_name))
-                discolor_bmp_file_process(file_name);
-            else{
-                printf("New functionality to be adeded for handel: %s\n", file_name);
-                exit(23);
-            }
+            close_pipe_ends(child_parent_pipe);
+            discolor_bmp_file_process(file_name);
         }else
             return child_process_factory();
+    }
+}
+
+void create_entry_process_for_regular_files(char *file_name, struct stat file_info){
+    pid_t pid1, pid2;
+    int regular_files_pipe[2];
+    open_pipe(regular_files_pipe);
+    pid1 = fork();
+    system_function_error_wrapper("Failed to create child process", pid1);
+    child_process_counter++;
+    if(!pid1){
+        close_pipe_ends(child_parent_pipe);
+        close_pipe_end(regular_files_pipe[0]);
+        stdout_on_pipe(regular_files_pipe);
+        open_destination_file(file_name);
+        extract_statistics_from_reqular_files(file_name, file_info);
+        close_destination_file();
+        char command[PATH_MAX] = {0};
+        sprintf(command, "/usr/bin/cat %s; exit %d", file_name, line_counter);
+        execute_sub_process(command);
+        exit(line_counter);
+    }else{
+        pid2 = fork();
+        system_function_error_wrapper("Failed to create child process", pid2);
+        child_process_counter++;
+        if(!pid2){
+            close_pipe_end(child_parent_pipe[0]);
+            close_pipe_end(regular_files_pipe[1]);
+            stdin_on_pipe(regular_files_pipe);
+            stdout_on_pipe(child_parent_pipe);
+            char command[128] = {0};
+            sprintf(command, "source %s/propoziti.sh %c; count_corect_sentances",curent_path, ch_2_be_found);
+            execute_sub_process(command);
+        }else{
+            close_pipe_ends(regular_files_pipe);
+            return child_process_factory();
+        }
     }
 }
 
@@ -338,6 +415,7 @@ void create_entry_process_for_directories(char *file_name, struct stat file_info
     system_function_error_wrapper("Failed to create child process", pid);
     child_process_counter++;
     if(!pid){
+        close_pipe_ends(child_parent_pipe);
         open_destination_file(file_name);
         extract_statistics_from_directories(file_name, file_info);
         close_destination_file();
@@ -351,6 +429,7 @@ void create_entry_process_for_links(char *file_name, struct stat file_info){
     system_function_error_wrapper("Failed to create child process", pid);
     child_process_counter++;
     if(!pid){
+        close_pipe_ends(child_parent_pipe);
         open_destination_file(file_name);
         extract_statistics_from_symbolic_links(file_name, file_info);
         close_destination_file();
@@ -366,7 +445,10 @@ void create_entry_processes(char *entry_name){
         lstat(entry_name, &entry_info)
     );
     if(S_ISREG(entry_info.st_mode))
-        return create_entry_process_for_regular_files(entry_name, entry_info);
+        if(is_bit_map_file(entry_name))
+            return create_entry_process_for_bmp_files(entry_name, entry_info);
+        else
+            return create_entry_process_for_regular_files(entry_name, entry_info);   
     else if(S_ISDIR(entry_info.st_mode))
         return create_entry_process_for_directories(entry_name, entry_info);
     else if(S_ISLNK(entry_info.st_mode))
@@ -385,7 +467,24 @@ int is_relative_path(char *name){
     return name[2] == '\0' ? 1 : 0;
 }
 
+void count_correct_sentences(){
+    close_pipe_end(child_parent_pipe[1]);
+    pid_t pid = fork();
+    system_function_error_wrapper("Failed to create a child process", pid);
+    if(!pid){
+        stdin_on_pipe(child_parent_pipe);
+        char command[128] = {0};
+        sprintf(command, "source %s/propoziti.sh %c; accumulate_corect_sentances", curent_path, ch_2_be_found);
+        execute_sub_process(command);
+    }else{
+        close_pipe_end(child_parent_pipe[0]);
+        int status;
+        system_function_error_wrapper("Function call error: 'waitpid'",
+            waitpid(pid, &status, 0)
+        );
+    }
 
+}
 
 void child_process_factory(){
     errno = 0;
@@ -394,16 +493,16 @@ void child_process_factory(){
         perror("Function call error: 'readdir'");
         exit(EXIT_FAILURE);
     }
-    if(!entry) return;
+    if(!entry) return count_correct_sentences();
     if(is_relative_path(entry->d_name))
         return child_process_factory();
     else
         return create_entry_processes(entry->d_name);
 }
 
-
 void iterate_directory(){
     current = opendir(".");
+    open_pipe(child_parent_pipe);
     if(!current){
         perror("Failed to open dir");
         exit(EXIT_FAILURE);
@@ -426,6 +525,8 @@ void wait_for_childs(){
         }
     }
     free(message);
+    free(curent_path);
+    free(destiation_directory);
 }
 
 
