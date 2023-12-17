@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
@@ -14,19 +15,56 @@
 
 
 int fw;
-char *destiation_directory;
+char ch_2_be_found;
+int child_parent_pipe[2];
+char *destiation_directory, *curent_path;
 int child_process_counter;
 int line_counter;
 
 DIR *current;
 void child_process_factory();
 
-
-void system_function_error_wrapper(char *error_message, int return_code){
+void system_function_error_wrapper(char *error_message, int return_code){ //tratam erorile care pot fi tratate de functiile standard din UNIX
     if(return_code < 0){
         perror(error_message);
         exit(EXIT_FAILURE);
     }
+}
+
+void open_pipe(int p[]){ //creaza pipe-ul
+    system_function_error_wrapper("Failed to open pipe",
+        pipe(p)
+    );
+}
+
+void close_pipe_end(int pipe_id){ //inchide un capat din pipe
+    system_function_error_wrapper("Function call error: 'close' on pipe end",
+        close(pipe_id)
+    );
+}
+
+void close_pipe_ends(int p[]){ //inchide intreb pipe-ul
+    close_pipe_end(p[0]);
+    close_pipe_end(p[1]);
+}
+
+void stdout_on_pipe(int p[]){ //redirecteaza standardul output catre capatul de iesire
+    system_function_error_wrapper("Failed to redirect standard output on pipe",
+        dup2(p[1], STDOUT_FILENO)
+    );
+}
+
+void stdin_on_pipe(int p[]){ //redirecteaza standardul input catre capatul de citire
+    system_function_error_wrapper("Failed to redirect standard input on pipe",
+        dup2(p[0], STDIN_FILENO)
+    );
+}
+
+
+void execute_sub_process(char *command){
+    execl("/usr/bin/bash", "bash", "-c", command, (char*)NULL);
+    perror("Fail to execute subprocess");
+    exit(EXIT_FAILURE);
 }
 
 const int CHAR_SIZE = sizeof(char);
@@ -40,34 +78,39 @@ char* string_safe_alloc(int size){
 }
 
 void check_command_line_argument(int argument_counter, char **arguments){
-    if (argument_counter != 3){
-        perror("Usage error: The binary require only two arguments, both of them should represent valid path to a directory");
+    if (argument_counter != 4){ //avem nevoie de 4 argumente, 3 argumente+executabilul
+        perror("Usage error: The binary require only three arguments, the first two, should represent valid path to a directory, and the last one should be alphanumeric character");
         exit(EXIT_FAILURE);
     }
-    char *curent_path = string_safe_alloc(PATH_MAX);
-    if(!getcwd(curent_path, PATH_MAX)){
+    curent_path = string_safe_alloc(PATH_MAX); //variabila globala
+    if(!getcwd(curent_path, PATH_MAX)){        //path-ul din care executam programul
         perror("Function call error: 'getcwd' for current directory");
         exit(EXIT_FAILURE);
     }
 
-    system_function_error_wrapper("Usage error: The second argument must be a path to a directory",
-        chdir(arguments[2])
+    system_function_error_wrapper("Usage error: The second argument must be a path to a directory", //daca e o cale invalida, vom avea eroare, avem nevoie de un director. argumentul 0 - executabil, arg 1 - argument de intrare, arg 2 - argument de iesire, arg 3 - caracterul care trebuie cautat
+        chdir(arguments[2]) //argument 2 de iesire
     );
 
-    destiation_directory = string_safe_alloc(PATH_MAX);
-    if(!getcwd(destiation_directory, PATH_MAX)){
+    destiation_directory = string_safe_alloc(PATH_MAX); //var globala
+    if(!getcwd(destiation_directory, PATH_MAX)){ //salvam calea catre directorul de output
         perror("Function call error: 'getcwd' for destination directory");
         exit(EXIT_FAILURE);
     }
 
-    system_function_error_wrapper("Function call error: 'chdir' going back to current directory",
+    system_function_error_wrapper("Function call error: 'chdir' going back to current directory", //trebuie sa ne intoarcem in directorul de unde am executat programul
         chdir(curent_path)
     );
-    free(curent_path);
 
-    system_function_error_wrapper("Usage error: The argument must be a path to a directory",
+    system_function_error_wrapper("Usage error: The argument must be a path to a directory", //intram in directorul de intrare
         chdir(arguments[1])
     );
+
+    if(strlen(arguments[3]) > 1 || !isalnum(arguments[3][0])){ //verificam ca este caracter alfanumeric
+        perror("The last argument must be an alphanumeric character");
+        exit(EXIT_FAILURE);
+    }
+    ch_2_be_found = arguments[3][0]; //salvam argumentul in ch_to_be_found
 }
 
 
@@ -103,29 +146,29 @@ void store_file_dimensions(int in_file){
    
     // use 2 as offset, to skip signature
     system_function_error_wrapper("Function call error: 'lseek', at first call", 
-        lseek(in_file, 2, SEEK_SET)
+        lseek(in_file, 2, SEEK_SET) //suntem la inceputul fisierului
     );
 
     unsigned int file_size_bytes;
     system_function_error_wrapper("Function call error: 'read', at file size reading",
-        read(in_file, &file_size_bytes, 4)
+        read(in_file, &file_size_bytes, 4) //cursorul se deplaseaza cu 4 biti ca sa citeasca file size-ul
     );
 
     system_function_error_wrapper("Function call error: 'lseek', at second call", 
-        lseek(in_file, 12, SEEK_CUR)
+        lseek(in_file, 12, SEEK_CUR) //pozitia curenta a cursorului
     );
 
     unsigned int width;
     system_function_error_wrapper("Function call error: 'read', at width reading",
-        read(in_file, &width, 4)
+        read(in_file, &width, 4) //citim latimea
     );
 
     unsigned int heigth;
     system_function_error_wrapper("Function call error: 'read', at heigth reading",
-        read(in_file, &heigth, 4)
+        read(in_file, &heigth, 4) //citim inaltimea
     );
 
-    add_statistical_record("inaltime", convert_uint_to_string(heigth));
+    add_statistical_record("inaltime", convert_uint_to_string(heigth)); //scriem datele in statistica, convertindu-le
     add_statistical_record("lungime", convert_uint_to_string(width));
     add_statistical_record("dimensiune", convert_uint_to_string(file_size_bytes));
 }
@@ -183,11 +226,11 @@ void inspect_file_permissions(unsigned int file_mode){
     add_statistical_record("drepturi de acces altii", rights);
 }
 
-void store_file_information_regular_files(struct stat file_information){
+void store_file_information_regular_files(struct stat file_information){ //adaugam informatii legate de UID
     add_statistical_record("identificatorul utilizatorului", convert_uint_to_string(file_information.st_uid));
-    add_statistical_record("contorul de legaturi", convert_uint_to_string(file_information.st_nlink));
+    add_statistical_record("contorul de legaturi", convert_uint_to_string(file_information.st_nlink)); //contorizam cate hard link-uri avem
     add_statistical_record("timpul ultimei modificari", parse_unix_time(file_information.st_mtime));
-    inspect_file_permissions(file_information.st_mode);
+    inspect_file_permissions(file_information.st_mode); //verificam drepturile
 }
 
 void extract_statistics_from_reqular_files(char *file_name, struct stat file_info){
@@ -200,7 +243,7 @@ void extract_statistics_from_reqular_files(char *file_name, struct stat file_inf
     store_file_information_regular_files(file_info);
 
     system_function_error_wrapper("Function call error: 'close' input",
-        close(fr)
+        close(fr) 
     );
 }
 
@@ -220,8 +263,8 @@ void extract_statistics_from_symbolic_links(char *file_name, struct stat file_in
         return;
     
     add_statistical_record("nume legatura", file_name);
-    add_statistical_record("dimensiune", convert_uint_to_string(file_info.st_size));
-    add_statistical_record("dimensiune fisier", convert_uint_to_string(target_file_info.st_size));
+    add_statistical_record("dimensiune", convert_uint_to_string(file_info.st_size)); //legatura simbolica
+    add_statistical_record("dimensiune fisier", convert_uint_to_string(target_file_info.st_size)); //fisierul pointat
     inspect_file_permissions(file_info.st_mode);
 }
 
@@ -248,7 +291,7 @@ int calculate_grey_intensity(int fd){
         lseek(fd, -3, SEEK_CUR)
     );
 
-    // in order to round the number to the closest integre
+    // in order to round the number to the closest integer
     grey_intensity += 0.5;
 
     return (int)grey_intensity;
@@ -258,7 +301,7 @@ int calculate_grey_intensity(int fd){
 void discolor_bmp_file_process(char *entry_name){
     int fd, grey_intensity;
     unsigned int raster_data_offset, width, height;
-    fd = open(entry_name, O_RDWR);
+    fd = open(entry_name, O_RDWR); //deschidem fisierul bmp
     system_function_error_wrapper("Function call error: 'open' in discolor process", fd);
     
     system_function_error_wrapper("Function call error: 'lseek' for data offset", 
@@ -295,7 +338,7 @@ void discolor_bmp_file_process(char *entry_name){
 
 void open_destination_file(char *file_name){
     char *destiation_file = string_safe_alloc(PATH_MAX);
-    sprintf(destiation_file, "%s/%s_statistica.txt", destiation_directory, file_name);
+    sprintf(destiation_file, "%s/%s_statistica.txt", destiation_directory, file_name); //creaza statistica (string) in destination file
     fw = open(destiation_file,  O_CREAT  | O_WRONLY | O_APPEND, 0777);
     system_function_error_wrapper("Function call error: 'open'", fw);
     free(destiation_file);
@@ -307,29 +350,63 @@ void close_destination_file(){
     );
 }
 
+void create_entry_process_for_bmp_files(char *file_name, struct stat file_info){
+    pid_t pid1, pid2;
+    pid1 = fork(); //creaza un proces care extrage informatii despre un fisier regulat
+    system_function_error_wrapper("Failed to create child process", pid1);
+    child_process_counter++;
+    if(!pid1){
+        close_pipe_ends(child_parent_pipe);
+        open_destination_file(file_name);
+        extract_statistics_from_reqular_files(file_name, file_info);
+        close_destination_file();
+        exit(line_counter); //iesim don proces, returnand nr-ul de linii
+    }else{
+        pid2 = fork(); //mai creem un proces fiu pentur a decolora bmp-ul
+        system_function_error_wrapper("Failed to create child process", pid2);
+        child_process_counter++;
+        if(!pid2){
+            close_pipe_ends(child_parent_pipe); //inchidem pipe-ul de parinte-copil
+            discolor_bmp_file_process(file_name);
+        }else
+            return child_process_factory();
+    }
+}
+
 void create_entry_process_for_regular_files(char *file_name, struct stat file_info){
     pid_t pid1, pid2;
+    int regular_files_pipe[2];
+    open_pipe(regular_files_pipe);
     pid1 = fork();
     system_function_error_wrapper("Failed to create child process", pid1);
     child_process_counter++;
     if(!pid1){
+        close_pipe_ends(child_parent_pipe);
+        close_pipe_end(regular_files_pipe[0]); //inchidem capul de citire
+        stdout_on_pipe(regular_files_pipe);
         open_destination_file(file_name);
         extract_statistics_from_reqular_files(file_name, file_info);
         close_destination_file();
+        char command[PATH_MAX] = {0};
+        sprintf(command, "/usr/bin/cat %s; exit %d", file_name, line_counter);
+        execute_sub_process(command); //se va executa comanda cat - returneaza continutul fisierului in pipe
         exit(line_counter);
     }else{
         pid2 = fork();
         system_function_error_wrapper("Failed to create child process", pid2);
         child_process_counter++;
         if(!pid2){
-            if(is_bit_map_file(file_name))
-                discolor_bmp_file_process(file_name);
-            else{
-                printf("New functionality to be adeded for handel: %s\n", file_name);
-                exit(23);
-            }
-        }else
+            close_pipe_end(child_parent_pipe[0]);  //inchide capul dintre parinte si copil
+            close_pipe_end(regular_files_pipe[1]); //inchidem capul de scriere
+            stdin_on_pipe(regular_files_pipe); //redirectam intrarea sa citim de la pipe
+            stdout_on_pipe(child_parent_pipe); //am redirectat scrierea de la iesirea standard de la parinte la copil catre pipe-ul global
+            char command[128] = {0};
+            sprintf(command, "source %s/propoziti.sh %c; count_corect_sentances",curent_path, ch_2_be_found);
+            execute_sub_process(command);
+        }else{
+            close_pipe_ends(regular_files_pipe); //inchidem ambele capete de comunicare intre frati
             return child_process_factory();
+        }
     }
 }
 
@@ -338,6 +415,7 @@ void create_entry_process_for_directories(char *file_name, struct stat file_info
     system_function_error_wrapper("Failed to create child process", pid);
     child_process_counter++;
     if(!pid){
+        close_pipe_ends(child_parent_pipe);
         open_destination_file(file_name);
         extract_statistics_from_directories(file_name, file_info);
         close_destination_file();
@@ -351,6 +429,7 @@ void create_entry_process_for_links(char *file_name, struct stat file_info){
     system_function_error_wrapper("Failed to create child process", pid);
     child_process_counter++;
     if(!pid){
+        close_pipe_ends(child_parent_pipe);
         open_destination_file(file_name);
         extract_statistics_from_symbolic_links(file_name, file_info);
         close_destination_file();
@@ -365,11 +444,14 @@ void create_entry_processes(char *entry_name){
     system_function_error_wrapper("Function call error: 'lstat'",
         lstat(entry_name, &entry_info)
     );
-    if(S_ISREG(entry_info.st_mode))
-        return create_entry_process_for_regular_files(entry_name, entry_info);
-    else if(S_ISDIR(entry_info.st_mode))
+    if(S_ISREG(entry_info.st_mode)) //verificam daca fisierul este regular
+        if(is_bit_map_file(entry_name)) //luam numele fisierului si verificam daca e de tip .bmp
+            return create_entry_process_for_bmp_files(entry_name, entry_info);
+        else
+            return create_entry_process_for_regular_files(entry_name, entry_info);   
+    else if(S_ISDIR(entry_info.st_mode)) //verificam daca e un director
         return create_entry_process_for_directories(entry_name, entry_info);
-    else if(S_ISLNK(entry_info.st_mode))
+    else if(S_ISLNK(entry_info.st_mode)) //verificam daca e legatura simbolica
         return create_entry_process_for_links(entry_name, entry_info);
     else
         return child_process_factory();
@@ -385,7 +467,24 @@ int is_relative_path(char *name){
     return name[2] == '\0' ? 1 : 0;
 }
 
+void count_correct_sentences(){
+    close_pipe_end(child_parent_pipe[1]);//inchidem capul de scriere
+    pid_t pid = fork();
+    system_function_error_wrapper("Failed to create a child process", pid);
+    if(!pid){
+        stdin_on_pipe(child_parent_pipe); //redirectam intrarea standart, pentru ca astepta input din partea pipe-ului
+        char command[128] = {0}; //proces fiu care aduna nr-ul de propozitii corecte
+        sprintf(command, "source %s/propoziti.sh %c; accumulate_corect_sentances", curent_path, ch_2_be_found);
+        execute_sub_process(command);
+    }else{
+        close_pipe_end(child_parent_pipe[0]);
+        int status;
+        system_function_error_wrapper("Function call error: 'waitpid'",
+            waitpid(pid, &status, 0) //asteptam terminarea procesului fiu creat in aceasta functie
+        );
+    }
 
+}
 
 void child_process_factory(){
     errno = 0;
@@ -394,21 +493,21 @@ void child_process_factory(){
         perror("Function call error: 'readdir'");
         exit(EXIT_FAILURE);
     }
-    if(!entry) return;
-    if(is_relative_path(entry->d_name))
-        return child_process_factory();
+    if(!entry) return count_correct_sentences(); //am terminat de iterat directorul de intrare
+    if(is_relative_path(entry->d_name)) //ne ajutam sa ignoram path-urile relative (directorul curent si directorul parinte)
+        return child_process_factory(); //trecem la intrarea urmatoare
     else
-        return create_entry_processes(entry->d_name);
+        return create_entry_processes(entry->d_name); //cream un proces specific pentru intrare
 }
 
-
 void iterate_directory(){
-    current = opendir(".");
+    current = opendir("."); //var globala, assignata cu un pointer de tip dirent catre directorul de intrare
+    open_pipe(child_parent_pipe); //deschidem pipe-ul dintre parinte si copii (doar pentru fisiere regulate)
     if(!current){
-        perror("Failed to open dir");
+        perror("Failed to open dir"); //verificam daca e null
         exit(EXIT_FAILURE);
     }
-    child_process_factory(current);
+    child_process_factory(); 
 }
 
 
@@ -426,10 +525,12 @@ void wait_for_childs(){
         }
     }
     free(message);
+    free(curent_path);
+    free(destiation_directory);
 }
 
 
-int main(int argc, char **argv){
+int main(int argc, char **argv){ 
     check_command_line_argument(argc, argv);
     iterate_directory();
     wait_for_childs();
